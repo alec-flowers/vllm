@@ -53,6 +53,7 @@ class AsyncLLM(EngineClient):
         use_cached_outputs: bool = False,
         log_requests: bool = True,
         start_engine_loop: bool = True,
+        stat_loggers: Optional[list[StatLoggerBase]] = None,
     ) -> None:
         if not envs.VLLM_USE_V1:
             raise ValueError(
@@ -78,6 +79,9 @@ class AsyncLLM(EngineClient):
                 loggers.append(
                     PrometheusStatLogger(vllm_config, engine_index=i))
                 self.stat_loggers.append(loggers)
+
+        if stat_loggers is not None:
+            loggers.extend(stat_loggers)
 
         # Tokenizer (+ ensure liveness if running in another process).
         self.tokenizer = init_tokenizer_from_configs(
