@@ -59,6 +59,13 @@ pub fn default_ready_response() -> EngineCoreReadyResponse {
         data_parallel_size: 1,
         kv_cache_size_tokens: None,
         kv_cache_max_concurrency: None,
+        kv_events_publisher: None,
+        kv_events_endpoint: None,
+        kv_events_replay_endpoint: None,
+        kv_events_topic: None,
+        kv_events_buffer_steps: 0,
+        kv_events_hwm: 0,
+        kv_events_max_queue_size: 0,
     }
 }
 

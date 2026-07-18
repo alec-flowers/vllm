@@ -1621,6 +1621,7 @@ class EngineCoreProc(EngineCore):
 
             # Register sockets with poller.
             poller = zmq.Poller()
+            kv_events_config = self.vllm_config.kv_events_config
             ready_response = EngineCoreReadyResponse(
                 max_model_len=self.vllm_config.model_config.max_model_len,
                 num_gpu_blocks=self.vllm_config.cache_config.num_gpu_blocks or 0,
@@ -1635,6 +1636,23 @@ class EngineCoreProc(EngineCore):
                 ),
                 kv_cache_max_concurrency=(
                     self.vllm_config.cache_config.kv_cache_max_concurrency
+                ),
+                kv_events_publisher=(
+                    kv_events_config.publisher if kv_events_config else None
+                ),
+                kv_events_endpoint=(
+                    kv_events_config.endpoint if kv_events_config else None
+                ),
+                kv_events_replay_endpoint=(
+                    kv_events_config.replay_endpoint if kv_events_config else None
+                ),
+                kv_events_topic=(kv_events_config.topic if kv_events_config else None),
+                kv_events_buffer_steps=(
+                    kv_events_config.buffer_steps if kv_events_config else 0
+                ),
+                kv_events_hwm=(kv_events_config.hwm if kv_events_config else 0),
+                kv_events_max_queue_size=(
+                    kv_events_config.max_queue_size if kv_events_config else 0
                 ),
             )
             ready_payload = msgspec.msgpack.encode(ready_response)

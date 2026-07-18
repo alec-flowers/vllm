@@ -56,6 +56,27 @@ pub struct EngineCoreReadyResponse {
     pub kv_cache_size_tokens: Option<u64>,
     /// Maximum achievable request concurrency given the KV cache, if reported.
     pub kv_cache_max_concurrency: Option<f64>,
+    /// KV-event publisher backend, if configured.
+    #[serde(default)]
+    pub kv_events_publisher: Option<String>,
+    /// Configured KV-event publish endpoint.
+    #[serde(default)]
+    pub kv_events_endpoint: Option<String>,
+    /// Configured KV-event replay endpoint.
+    #[serde(default)]
+    pub kv_events_replay_endpoint: Option<String>,
+    /// KV-event topic.
+    #[serde(default)]
+    pub kv_events_topic: Option<String>,
+    /// Number of event batches retained for replay.
+    #[serde(default)]
+    pub kv_events_buffer_steps: u32,
+    /// ZMQ publisher high-water mark.
+    #[serde(default)]
+    pub kv_events_hwm: u32,
+    /// Maximum publisher queue size.
+    #[serde(default)]
+    pub kv_events_max_queue_size: u32,
 }
 
 /// Frontend-owned ZMQ addresses that are sent to the engine during startup

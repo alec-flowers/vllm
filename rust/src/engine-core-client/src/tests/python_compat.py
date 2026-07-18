@@ -365,6 +365,13 @@ class EngineCoreReadyResponse:
     data_parallel_size: int
     kv_cache_size_tokens: int | None = None
     kv_cache_max_concurrency: float | None = None
+    kv_events_publisher: str | None = None
+    kv_events_endpoint: str | None = None
+    kv_events_replay_endpoint: str | None = None
+    kv_events_topic: str | None = None
+    kv_events_buffer_steps: int = 0
+    kv_events_hwm: int = 0
+    kv_events_max_queue_size: int = 0
 
 
 ready_response = EngineCoreReadyResponse(
@@ -376,6 +383,13 @@ ready_response = EngineCoreReadyResponse(
     vllm_version="0.0.0",
     data_parallel_size=1,
     world_size=1,
+    kv_events_publisher="zmq",
+    kv_events_endpoint="tcp://127.0.0.1:5557",
+    kv_events_replay_endpoint="tcp://127.0.0.1:5558",
+    kv_events_topic="kv",
+    kv_events_buffer_steps=10_000,
+    kv_events_hwm=100_000,
+    kv_events_max_queue_size=100_000,
 )
 
 print(msgspec.msgpack.encode(request).hex())

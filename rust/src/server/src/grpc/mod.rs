@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use tracing::info;
+use vllm_engine_core_client::protocol::handshake::EngineCoreReadyResponse;
 use vllm_text::{DecodedTextEvent, TextOutputStreamExt as _};
 
 use self::convert::ResponseOpts;
@@ -70,6 +71,89 @@ impl pb::control_server::Control for ControlServiceImpl {
             .map_err(|error| Status::internal(error.to_report_string()))?;
         Ok(Response::new(pb::AbortResponse {}))
     }
+
+    async fn get_kv_event_sources(
+        &self,
+        _request: Request<pb::GetKvEventSourcesRequest>,
+    ) -> Result<Response<pb::GetKvEventSourcesResponse>, Status> {
+        let client = self.state.engine_core_client();
+        let sources = client
+            .indexed_ready_responses()
+            .into_iter()
+            .filter_map(|(rank, response)| kv_event_source(response, rank))
+            .collect();
+        Ok(Response::new(pb::GetKvEventSourcesResponse { sources }))
+    }
+}
+
+fn kv_event_source(
+    response: &EngineCoreReadyResponse,
+    data_parallel_rank: Option<u32>,
+) -> Option<pb::KvEventSource> {
+    if response.kv_events_publisher.as_deref() != Some("zmq") {
+        return None;
+    }
+
+    let rank = data_parallel_rank.unwrap_or_default();
+    let endpoint = offset_endpoint_port(response.kv_events_endpoint.as_deref()?, rank);
+    let replay_endpoint = response
+        .kv_events_replay_endpoint
+        .as_deref()
+        .map(|endpoint| offset_endpoint_port(endpoint, rank))
+        .unwrap_or_default();
+
+    Some(pb::KvEventSource {
+        transport: "zmq".to_string(),
+        endpoint_addr: Some(kv_endpoint_from_zmq(&endpoint)?),
+        topic: response.kv_events_topic.clone().unwrap_or_default(),
+        replay_endpoint,
+        data_parallel_rank,
+        encoding: "msgpack".to_string(),
+        schema_version: 1,
+        buffer_steps: response.kv_events_buffer_steps,
+        hwm: response.kv_events_hwm,
+        max_queue_size: response.kv_events_max_queue_size,
+    })
+}
+
+fn offset_endpoint_port(endpoint: &str, data_parallel_rank: u32) -> String {
+    if data_parallel_rank == 0 || endpoint.is_empty() {
+        return endpoint.to_string();
+    }
+    if endpoint.contains("inproc") {
+        return format!("{endpoint}_dp{data_parallel_rank}");
+    }
+    if endpoint.contains("tcp")
+        && let Some((base_addr, port)) = endpoint.rsplit_once(':')
+        && let Ok(base_port) = port.parse::<u32>()
+    {
+        return format!("{base_addr}:{}", base_port + data_parallel_rank);
+    }
+    endpoint.to_string()
+}
+
+fn kv_endpoint_from_zmq(endpoint: &str) -> Option<pb::KvEventEndpoint> {
+    let rest = endpoint.strip_prefix("tcp://").unwrap_or(endpoint);
+    let (host, port) = rest.rsplit_once(':')?;
+    let port = port.parse().ok()?;
+    let host = match host.trim_matches(|character| character == '[' || character == ']') {
+        "*" | "0.0.0.0" | "::" | "" => advertise_host(),
+        concrete => concrete.to_string(),
+    };
+    Some(pb::KvEventEndpoint {
+        host,
+        port,
+        protocol: "tcp".to_string(),
+    })
+}
+
+fn advertise_host() -> String {
+    std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|socket| {
+            socket.connect("10.255.255.255:1")?;
+            Ok(socket.local_addr()?.ip().to_string())
+        })
+        .unwrap_or_else(|_| "127.0.0.1".to_string())
 }
 
 #[tonic::async_trait]

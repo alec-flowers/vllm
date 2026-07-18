@@ -19,7 +19,7 @@ use zeromq::prelude::{Socket, SocketRecv, SocketSend};
 use zeromq::util::PeerIdentity;
 use zeromq::{DealerSocket, PushSocket, SocketOptions, SubSocket, XPubSocket, ZmqMessage};
 
-use crate::protocol::handshake::{HandshakeInitMessage, ReadyMessage};
+use crate::protocol::handshake::{EngineCoreReadyResponse, HandshakeInitMessage, ReadyMessage};
 use crate::protocol::logprobs::MaybeWireLogprobs;
 use crate::protocol::multimodal::{
     MmFeatureSpec, MmField, MmFieldElem, MmFlatField, MmKwargValue, MmSlice, PlaceholderRange,
@@ -2597,6 +2597,22 @@ fn python_msgpack_fixtures_match_rust_encoding() {
         rust_ready_keys, python_ready_keys,
         "EngineCoreReadyResponse drifted from the Python dataclass",
     );
+
+    let ready_response: EngineCoreReadyResponse =
+        rmp_serde::from_slice(&hex::decode(ready_response_hex).unwrap()).unwrap();
+    assert_eq!(ready_response.kv_events_publisher.as_deref(), Some("zmq"));
+    assert_eq!(
+        ready_response.kv_events_endpoint.as_deref(),
+        Some("tcp://127.0.0.1:5557")
+    );
+    assert_eq!(
+        ready_response.kv_events_replay_endpoint.as_deref(),
+        Some("tcp://127.0.0.1:5558")
+    );
+    assert_eq!(ready_response.kv_events_topic.as_deref(), Some("kv"));
+    assert_eq!(ready_response.kv_events_buffer_steps, 10_000);
+    assert_eq!(ready_response.kv_events_hwm, 100_000);
+    assert_eq!(ready_response.kv_events_max_queue_size, 100_000);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
