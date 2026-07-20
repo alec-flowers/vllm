@@ -1152,41 +1152,20 @@ async fn control_abort_ends_active_generation() {
     server_task.abort();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial]
-async fn control_kv_event_sources_is_empty_when_not_configured() {
-    let (generate_service, control_service, engine_health, _engine_task) =
-        setup_grpc_service(b"engine-grpc-kv-events", default_stream_output_specs()).await;
-    let (channel, server_task) = start_grpc_test_server(
-        generate_service,
-        control_service,
-        engine_health,
-        tokio_util::sync::CancellationToken::new(),
-    )
-    .await;
-    let mut client = ControlClient::new(channel);
-
-    let response = client
-        .get_kv_event_sources(pb::GetKvEventSourcesRequest {})
-        .await
-        .expect("discover KV event sources")
-        .into_inner();
-    assert!(response.sources.is_empty());
-
-    server_task.abort();
-}
-
 #[test]
-fn kv_event_source_maps_configured_zmq_publisher() {
+fn kv_event_source_filters_and_maps_zmq_publisher() {
     let mut ready = default_ready_response();
-    ready.kv_events_publisher = Some("zmq".to_string());
-    ready.kv_events_endpoint = Some("tcp://127.0.0.1:5557".to_string());
+    ready.kv_events_publisher = Some("null".to_string());
+    ready.kv_events_endpoint = Some("tcp://*:5557".to_string());
     ready.kv_events_replay_endpoint = Some("tcp://127.0.0.1:5558".to_string());
     ready.kv_events_topic = Some("kv".to_string());
     ready.kv_events_buffer_steps = 10_000;
     ready.kv_events_hwm = 100_000;
     ready.kv_events_max_queue_size = 100_000;
 
+    assert!(kv_event_source(&ready, Some(2)).is_none());
+
+    ready.kv_events_publisher = Some("zmq".to_string());
     let source = kv_event_source(&ready, Some(2)).expect("configured ZMQ event source");
     assert_eq!(source.transport, "zmq");
     assert_eq!(source.topic, "kv");
@@ -1199,7 +1178,7 @@ fn kv_event_source_maps_configured_zmq_publisher() {
     assert_eq!(source.max_queue_size, 100_000);
 
     let endpoint = source.endpoint_addr.expect("event endpoint");
-    assert_eq!(endpoint.host, "127.0.0.1");
+    assert!(!["", "*", "0.0.0.0", "::"].contains(&endpoint.host.as_str()));
     assert_eq!(endpoint.port, 5559);
     assert_eq!(endpoint.protocol, "tcp");
 
