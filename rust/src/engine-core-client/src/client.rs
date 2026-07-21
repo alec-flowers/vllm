@@ -394,6 +394,19 @@ impl EngineCoreClient {
         self.engines.iter().map(|engine| &engine.ready_response).collect()
     }
 
+    /// Return the first engine's ready response.
+    ///
+    /// Topology and scheduler limits are validated as uniform during startup.
+    /// Per-engine fields such as `data_parallel_rank` should be read through
+    /// [`ready_responses`](Self::ready_responses).
+    pub fn ready_response(&self) -> &EngineCoreReadyResponse {
+        &self
+            .engines
+            .first()
+            .expect("engine core client requires at least one engine")
+            .ready_response
+    }
+
     /// Return each ready response with its engine index, when encoded in the
     /// engine identity.
     pub fn indexed_ready_responses(&self) -> Vec<(Option<u32>, &EngineCoreReadyResponse)> {
