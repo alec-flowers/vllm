@@ -375,6 +375,12 @@ class ParallelConfig:
     """Equal to the data parallel rank but not used for torch process groups
     and not overridden for dense models."""
 
+    data_parallel_size_configured: int = Field(init=False)
+    """Data parallel size as configured for the deployment. Preserved here
+    because dense (non-MoE) engines locally reset ``data_parallel_size`` to 1 and
+    run as independent replicas; this retains the original size so frontends can
+    report the true DP size at discovery time."""
+
     _api_process_count: int = Field(default=1, gt=0)
     """
     The number of API processes initialized.
@@ -749,6 +755,7 @@ class ParallelConfig:
             "data_parallel_rank_local",
             "data_parallel_size_local",
             "data_parallel_index",
+            "data_parallel_size_configured",
             "data_parallel_backend",
             "data_parallel_external_lb",
             "data_parallel_hybrid_lb",
@@ -863,6 +870,7 @@ class ParallelConfig:
                 )
 
         self.data_parallel_index = self.data_parallel_rank
+        self.data_parallel_size_configured = self.data_parallel_size
 
         if self.distributed_executor_backend == "external_launcher":
             os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
