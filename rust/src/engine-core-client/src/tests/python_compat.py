@@ -512,47 +512,6 @@ class KVEventsConfig:
     topic: str
 
 
-# Mirrors of `vllm/distributed/kv_events.py`.
-class KVCacheEvent(msgspec.Struct, omit_defaults=True, gc=False, tag=True):
-    pass
-
-
-class BlockStored(KVCacheEvent):
-    block_hashes: list[bytes | int]
-    parent_block_hash: bytes | int | None
-    token_ids: list[int]
-    block_size: int
-    lora_id: int | None
-    medium: str | None
-    lora_name: str | None
-    extra_keys: list[tuple | None] | None = None
-    group_idx: int | None = None
-    kv_cache_spec_kind: str | None = None
-    kv_cache_spec_sliding_window: int | None = None
-    locality: str | None = None
-    ownership: str | None = None
-    session_id: str | None = None
-    lookahead_token_ids: list[list[int]] | None = None
-
-
-class BlockRemoved(KVCacheEvent):
-    block_hashes: list[bytes | int]
-    medium: str | None
-    group_idx: int | None = None
-    locality: str | None = None
-    ownership: str | None = None
-
-
-class AllBlocksCleared(KVCacheEvent):
-    pass
-
-
-class KVEventBatch(msgspec.Struct, array_like=True, omit_defaults=True, gc=False):
-    ts: float
-    events: list[BlockStored | BlockRemoved | AllBlocksCleared]
-    data_parallel_rank: int | None = None
-
-
 @dataclass(slots=True)
 class PrefixHashConfig:
     hash_algo: str
@@ -759,44 +718,3 @@ print(msgspec.msgpack.encode(lora_request).hex())
 print(msgspec.msgpack.encode(inplace_lora_request).hex())
 print(msgspec.msgpack.encode(simple_cpu_offload_stats).hex())
 print(msgspec.msgpack.encode(kv_offload_stats).hex())
-
-kv_event_batch = KVEventBatch(
-    ts=1700000000.5,
-    events=[
-        BlockStored(
-            block_hashes=[b"\x01" * 4, b"\x02" * 4],
-            parent_block_hash=b"\x00" * 4,
-            token_ids=[11, 12, 21, 22],
-            block_size=2,
-            lora_id=7,
-            medium="GPU",
-            lora_name="adapter",
-            # As published by `to_event_extra_keys`: a LoRA name, an
-            # `(mm_identifier, offset)` pair, a cache salt and a prompt-embeds
-            # digest; None for a block without extra keys.
-            extra_keys=[("adapter", ("image-hash", -3), "salt", b"\xaa\xbb"), None],
-            group_idx=1,
-            kv_cache_spec_kind="sliding_window",
-            kv_cache_spec_sliding_window=4096,
-            locality="LOCAL",
-            ownership="kvcr",
-            session_id="session-1",
-            lookahead_token_ids=[[21], [31]],
-        ),
-        # `VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES` publishes the low 64 bits; the
-        # LMCache connector forwards Python's signed `hash()`.
-        BlockStored(
-            block_hashes=[0x0102030405060708, 2**64 - 1, -2],
-            parent_block_hash=None,
-            token_ids=[1, 2],
-            block_size=1,
-            lora_id=None,
-            medium=None,
-            lora_name=None,
-        ),
-        BlockRemoved(block_hashes=[b"\x01" * 4], medium="CPU", locality="REMOTE"),
-        AllBlocksCleared(),
-    ],
-    data_parallel_rank=1,
-)
-print(msgspec.msgpack.encode(kv_event_batch).hex())
