@@ -10,13 +10,18 @@ use bytes::Bytes;
 use thiserror_ext::AsReport as _;
 use tracing::warn;
 use zeromq::prelude::{Socket, SocketRecv, SocketSend};
-use zeromq::{DealerSocket, SubSocket, ZmqMessage};
+use zeromq::{DealerSocket, SocketOptions, SubSocket, ZmqMessage};
 
-use crate::error::{Error, Result};
+use crate::error::{
+    Error, Result, bail_unexpected_kv_event_message, bail_unsupported_kv_event_endpoint,
+};
 use crate::protocol::handshake::KvEventsConfig;
 use crate::protocol::kv_events::KvEventBatch;
 
-/// How long one replay may take before the missing batches count as lost.
+/// How long connecting to one of the publisher's sockets may take.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long the publisher may take to send the next frame of a replay before
+/// the missing batches count as lost.
 const REPLAY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Sequence number of the frame that ends a replay (`ZmqEventPublisher.END_SEQ`).
 const REPLAY_END_SEQUENCE_NUMBER: u64 = u64::MAX;
@@ -40,7 +45,8 @@ pub struct SequencedKvEventBatch {
 // until the next one arrives; probe the replay socket while idle.
 pub struct KvEventSubscriber {
     events: SubSocket,
-    replay: Option<DealerSocket>,
+    /// Address of the publisher's replay socket, if it has one.
+    replay_endpoint: Option<String>,
     /// Sequence number after the last accepted batch; `None` before the first.
     next_sequence_number: Option<u64>,
     /// Whether a batch was lost since the last yielded one.
@@ -55,28 +61,19 @@ impl KvEventSubscriber {
     /// A wildcard bind address is reached over loopback, so such a publisher
     /// must run on this host.
     pub async fn connect(config: &KvEventsConfig) -> Result<Self> {
-        let mut events = SubSocket::new();
+        let mut events = SubSocket::with_options(socket_options());
         events.connect(&connect_endpoint(&config.endpoint)?).await?;
         events.subscribe(&config.topic).await?;
 
-        let replay = match &config.replay_endpoint {
-            Some(endpoint) => {
-                let mut replay = DealerSocket::new();
-                replay.connect(&connect_endpoint(endpoint)?).await?;
-                Some(replay)
-            }
-            None => None,
-        };
-
         let mut subscriber = Self {
             events,
-            replay,
+            replay_endpoint: config.replay_endpoint.as_deref().map(connect_endpoint).transpose()?,
             next_sequence_number: None,
             gap: false,
             replayed: VecDeque::new(),
         };
         // Batches published before the subscription took effect.
-        subscriber.request_replay(0).await;
+        subscriber.replay_from(0).await?;
         Ok(subscriber)
     }
 
@@ -140,9 +137,14 @@ impl KvEventSubscriber {
     }
 
     async fn replay_from(&mut self, start: u64) -> Result<()> {
-        let Some(replay) = &mut self.replay else {
+        let Some(endpoint) = &self.replay_endpoint else {
             return Ok(());
         };
+        // One socket per replay: the late reply to a replay that timed out is
+        // never read as the next one's, and a connection lost while idle needs
+        // no repair.
+        let mut replay = DealerSocket::with_options(socket_options());
+        replay.connect(endpoint).await?;
         // The empty frame is the REQ envelope the publisher's ROUTER expects.
         let request = vec![Bytes::new(), Bytes::copy_from_slice(&start.to_be_bytes())];
         replay
@@ -165,6 +167,12 @@ impl KvEventSubscriber {
     }
 }
 
+fn socket_options() -> SocketOptions {
+    let mut options = SocketOptions::default();
+    options.connect_timeout(CONNECT_TIMEOUT);
+    options
+}
+
 /// Split a `(topic, sequence number, payload)` message that follows
 /// `envelope_frames` envelope frames.
 fn published_batch(message: ZmqMessage, envelope_frames: usize) -> Result<(u64, Bytes)> {
@@ -173,15 +181,11 @@ fn published_batch(message: ZmqMessage, envelope_frames: usize) -> Result<(u64, 
         Some(&[b0, b1, b2, b3, b4, b5, b6, b7]) if frames.len() == envelope_frames + 3 => {
             u64::from_be_bytes([b0, b1, b2, b3, b4, b5, b6, b7])
         }
-        _ => {
-            return Err(Error::UnexpectedKvEventMessage {
-                message: format!(
-                    "expected {} frames with an 8-byte sequence number, got frame lengths {:?}",
-                    envelope_frames + 3,
-                    frames.iter().map(Bytes::len).collect::<Vec<_>>()
-                ),
-            });
-        }
+        _ => bail_unexpected_kv_event_message!(
+            "expected {} frames with an 8-byte sequence number, got frame lengths {:?}",
+            envelope_frames + 3,
+            frames.iter().map(Bytes::len).collect::<Vec<_>>()
+        ),
     };
     Ok((sequence_number, frames.swap_remove(envelope_frames + 2)))
 }
@@ -189,10 +193,10 @@ fn published_batch(message: ZmqMessage, envelope_frames: usize) -> Result<(u64, 
 /// The address that reaches a publisher bound to `endpoint`.
 fn connect_endpoint(endpoint: &str) -> Result<String> {
     if endpoint.starts_with("inproc://") {
-        return Err(Error::UnsupportedKvEventEndpoint {
-            endpoint: endpoint.to_string(),
-            message: "an inproc endpoint is only reachable inside the engine process".to_string(),
-        });
+        bail_unsupported_kv_event_endpoint!(
+            endpoint = endpoint,
+            "an inproc endpoint is only reachable inside the engine process"
+        );
     }
     let Some((host, port)) =
         endpoint.strip_prefix("tcp://").and_then(|address| address.rsplit_once(':'))
@@ -290,6 +294,12 @@ mod tests {
             (2, false)
         );
         assert_eq!(received.recv().await, Some((3, false)));
+
+        // And again: every replay stands on its own.
+        publisher.retain(4, &batch(4));
+        publisher.publish(5, &batch(5)).await;
+        assert_eq!(received.recv().await, Some((4, false)));
+        assert_eq!(received.recv().await, Some((5, false)));
     }
 
     #[tokio::test]

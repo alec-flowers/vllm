@@ -10,7 +10,7 @@ use std::sync::Arc;
 use asynk_strim_attr::{TryYielder, try_stream};
 use futures::Stream;
 use thiserror_ext::AsReport as _;
-use tokio::sync::Mutex;
+use tokio::sync::OnceCell;
 use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status};
 use vllm_engine_core_client::kv_events::SequencedKvEventBatch;
@@ -30,16 +30,19 @@ pub(crate) type KvEventsGrpcService = KvEventsServer<KvEventsServiceImpl>;
 pub struct KvEventsServiceImpl {
     state: Arc<AppState>,
     /// Relays by data-parallel rank, each started by its first subscriber.
-    relays: Mutex<BTreeMap<u32, Arc<KvEventRelay>>>,
+    relays: BTreeMap<u32, OnceCell<KvEventRelay>>,
     /// Ends the streams, which would otherwise hold up a graceful shutdown.
     shutdown: CancellationToken,
 }
 
 impl KvEventsServiceImpl {
     pub fn new(state: Arc<AppState>, shutdown: CancellationToken) -> Self {
+        let relays = (state.engine_core_client().ready_responses().into_iter())
+            .map(|ready| (ready.data_parallel_rank, OnceCell::new()))
+            .collect();
         Self {
             state,
-            relays: Mutex::new(BTreeMap::new()),
+            relays,
             shutdown,
         }
     }
@@ -69,19 +72,16 @@ impl KvEventsServiceImpl {
         }
     }
 
-    /// The relay of one rank, connecting it on first use.
-    async fn relay(&self, rank: u32, config: &KvEventsConfig) -> Result<Arc<KvEventRelay>, Status> {
-        let mut relays = self.relays.lock().await;
-        if let Some(relay) = relays.get(&rank) {
-            return Ok(relay.clone());
-        }
-        let relay = KvEventRelay::connect(config).await.map_err(|error| {
+    /// The relay of one connected rank, connecting it on first use. A failed
+    /// connect is retried by the next subscriber.
+    async fn relay(&self, rank: u32, config: &KvEventsConfig) -> Result<&KvEventRelay, Status> {
+        let relay = self.relays.get(&rank).expect("every connected rank has a relay cell");
+        relay.get_or_try_init(|| KvEventRelay::connect(config)).await.map_err(|error| {
             Status::unavailable(format!(
                 "failed to connect to the KV event publisher of rank {rank}: {}",
                 error.as_report()
             ))
-        })?;
-        Ok(relays.entry(rank).or_insert(Arc::new(relay)).clone())
+        })
     }
 }
 

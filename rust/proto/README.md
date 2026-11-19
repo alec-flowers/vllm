@@ -5,23 +5,6 @@ This directory is the canonical source for vLLM's gRPC schema.
 See [context parallel deployment](../../docs/serving/context_parallel_deployment.md)
 for effective attention block-size metadata in Python and `Control.GetServerInfo`.
 
-## KV cache events
-
-`KvEvents.SubscribeKvEvents` streams the KV cache events of an engine started
-with `--kv-events-config '{"enable_kv_cache_events": true}'`, one stream per
-data-parallel rank. The frontend reads them from the engine's ZMQ publisher,
-which stays available to existing ZMQ consumers, and starts doing so when a rank
-gets its first subscriber. It then keeps as many batches as the publisher's
-`buffer_steps` so that later subscribers can catch up and reconnecting ones can
-resume.
-
-Set `replay_endpoint` in the config so the frontend can fetch the batches
-published before the first subscriber and any that the publisher's PUB socket
-drops. Without it, those batches are lost and every open stream ends with
-`DATA_LOSS`. The frontend reaches a wildcard endpoint such as `tcp://*:5557`
-over loopback; an engine on another host must publish on an address the
-frontend can connect to, for example `tcp://*:0`.
-
 Schema updates are no longer published to the Buf Schema Registry. Rust consumers
 should use `vllm-proto` from crates.io; consumers in other languages can generate
 bindings from the `.proto` files in this directory. Buf still builds and lints
@@ -33,7 +16,7 @@ the schemas on pull requests, including on forks.
 
 ```toml
 [dependencies]
-vllm-proto = "0.8"
+vllm-proto = "0.7"
 ```
 
 For example, import `vllm_proto::inference_client::InferenceClient`,
@@ -76,3 +59,32 @@ for repository `vllm-project/vllm`, workflow `proto-crate.yml`, and environment
 `crates-io`. Configure that GitHub environment to allow `proto-v*` release tags.
 Only tag pushes in the upstream repository can publish; forks do not obtain
 publishing credentials.
+
+## KV cache events
+
+`KvEvents.SubscribeKvEvents` streams the KV cache events of an engine started
+with `--kv-events-config '{"enable_kv_cache_events": true}'`, one stream per
+data-parallel rank. The frontend reads them from the engine's ZMQ publisher,
+which stays available to existing ZMQ consumers, and starts doing so when a rank
+gets its first subscriber. It then keeps as many batches as the publisher's
+`buffer_steps` so that later subscribers can catch up and reconnecting ones can
+resume.
+
+Set `replay_endpoint` in the config so the frontend can fetch the batches
+published before the first subscriber, as far back as the publisher's
+`buffer_steps`, and any that the publisher's PUB socket drops later. Without it,
+a stream begins at whatever batch the frontend saw first, and a batch dropped
+later ends every open stream with `DATA_LOSS`. Only a stream whose first batch
+has sequence number 0 carries every event since the engine started.
+
+The frontend reaches a wildcard endpoint such as `tcp://*:5557` over loopback;
+an engine on another host must publish on an address the frontend can connect
+to, for example `tcp://*:0`.
+
+The retained batches are held decoded, per rank, for as long as the frontend
+runs. At the default `buffer_steps` that can reach hundreds of megabytes per
+rank under load; lower `buffer_steps` to bound it.
+
+Each batch is one gRPC message. Requests that set `kv_cache_report_mode=full`
+can produce batches above the 4 MiB that gRPC clients accept by default, so
+subscribers should raise their receive limit.

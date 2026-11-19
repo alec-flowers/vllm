@@ -15,6 +15,10 @@ use vllm_engine_core_client::protocol::handshake::KvEventsConfig;
 
 use super::{batch_to_proto, pb};
 
+/// Most batches one read hands to a reader, so that a reader far behind does
+/// not keep a whole history's worth of evicted batches alive.
+const MAX_READ_BATCHES: usize = 256;
+
 /// Pause after a failed read from the publisher, which fails repeatedly while
 /// the connection is down.
 const RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -65,8 +69,8 @@ impl History {
         self.batches.push_back(Arc::new(batch_to_proto(batch)));
     }
 
-    /// Index of the retained batch with sequence number `next`; of the oldest
-    /// one for `None`.
+    /// Index of the retained batch with sequence number `next`, which may be
+    /// the one after the newest; of the oldest one for `None`.
     fn position(&self, stream_id: &str, next: Option<u64>) -> Result<usize, HistoryMiss> {
         if stream_id != self.stream_id {
             return Err(HistoryMiss);
@@ -74,8 +78,10 @@ impl History {
         match (next, self.batches.front()) {
             (Some(next), Some(oldest)) => next
                 .checked_sub(oldest.sequence_number)
+                .filter(|position| *position <= self.batches.len() as u64)
                 .map(|position| position as usize)
                 .ok_or(HistoryMiss),
+            // Nothing to check the cursor against until the first batch.
             _ => Ok(0),
         }
     }
@@ -153,17 +159,22 @@ impl KvEventReader {
         &self.stream_id
     }
 
-    /// The batches after the last ones read, waiting for at least one.
+    /// Up to [`MAX_READ_BATCHES`] batches after the last ones read, waiting
+    /// for at least one.
     pub async fn next_batches(&mut self) -> Result<Vec<Arc<pb::KvEventBatch>>, ReadError> {
         loop {
             self.history.changed().await.map_err(|_| ReadError::RelayStopped)?;
             let batches: Vec<_> = {
                 let retained = self.history.borrow_and_update();
                 let position = retained.position(&self.stream_id, self.next)?;
-                retained.batches.iter().skip(position).cloned().collect()
+                retained.batches.iter().skip(position).take(MAX_READ_BATCHES).cloned().collect()
             };
             if let Some(newest) = batches.last() {
                 self.next = Some(newest.sequence_number + 1);
+                if batches.len() == MAX_READ_BATCHES {
+                    // More may be retained already.
+                    self.history.mark_changed();
+                }
                 return Ok(batches);
             }
         }

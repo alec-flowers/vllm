@@ -112,7 +112,8 @@ pub enum BlockLocality {
 ///
 /// Python publishes the digest, or its low 64 bits as an integer under
 /// `VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES`; the integer decodes to the 8 bytes
-/// it was taken from.
+/// it was taken from. A connector that forwards its own hashes may publish
+/// signed integers, which decode to their 8 two's-complement bytes.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ExternalBlockHash(pub Vec<u8>);
 
@@ -136,7 +137,7 @@ impl<'de> Deserialize<'de> for ExternalBlockHash {
             type Value = ExternalBlockHash;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a block hash as bytes or an unsigned 64-bit integer")
+                formatter.write_str("a block hash as bytes or a 64-bit integer")
             }
 
             fn visit_bytes<E>(self, value: &[u8]) -> std::result::Result<Self::Value, E> {
@@ -148,6 +149,10 @@ impl<'de> Deserialize<'de> for ExternalBlockHash {
             }
 
             fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E> {
+                Ok(ExternalBlockHash(value.to_be_bytes().to_vec()))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E> {
                 Ok(ExternalBlockHash(value.to_be_bytes().to_vec()))
             }
         }

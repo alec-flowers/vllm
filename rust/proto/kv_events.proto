@@ -12,10 +12,19 @@ service KvEvents {
   // first batch has sequence number 0 carries every event since the engine
   // started; any other stream begins with the oldest batch the server retains.
   //
+  // Each batch is one message, however large. A step that reports the whole
+  // prefix of long requests (`kv_cache_report_mode=full`) can exceed the 4 MiB
+  // that gRPC clients accept by default, so raise the client's receive limit.
+  // A client that rejects a batch for its size will meet it again on every new
+  // subscription until the server no longer retains it.
+  //
+  // INVALID_ARGUMENT: `data_parallel_rank` is unset on a server with several
+  // ranks, or names a rank the server is not connected to.
+  //
   // FAILED_PRECONDITION: the engine does not publish KV cache events.
   //
-  // OUT_OF_RANGE: `resume` names another stream or batches no longer retained.
-  // Subscribe again without `resume` and rebuild.
+  // OUT_OF_RANGE: `resume` names another stream, batches no longer retained,
+  // or batches not yet published. Subscribe again without `resume` and rebuild.
   //
   // DATA_LOSS: batches were lost or this subscriber fell behind the retained
   // history. Discard the state built from this stream and subscribe again
@@ -27,7 +36,8 @@ service KvEvents {
 }
 
 message SubscribeKvEventsRequest {
-  // Rank to follow. May be unset when the server has a single rank.
+  // Rank to follow; `Control.GetKvEventSources` lists the ranks that publish
+  // events. May be unset when the server has a single rank.
   optional uint32 data_parallel_rank = 1;
   // Continue an earlier stream after a reconnect. Unset starts from the oldest
   // retained batch.
@@ -57,6 +67,7 @@ message KvEventStreamStart {
   uint32 data_parallel_rank = 2;
 }
 
+// The events of one scheduler step.
 message KvEventBatch {
   // The engine's per-rank batch counter, starting at 0.
   uint64 sequence_number = 1;
@@ -80,24 +91,30 @@ enum KvBlockLocality {
   KV_BLOCK_LOCALITY_REMOTE = 2;
 }
 
-// A chain of blocks became available: block i's parent is block i-1.
+// Blocks of one sequence became available in a storage tier, in sequence
+// order. They are consecutive, each the parent of the next, only when
+// `token_ids` holds exactly `block_size` tokens for each of them.
 message KvBlocksStored {
-  // Prefix-cache hash of each block. An engine that publishes integer hashes
-  // (`VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES`) sends the trailing 8 bytes of the
-  // digest, big-endian.
+  // Prefix-cache hash of each block. A publisher of 64-bit integer hashes sends
+  // each as its 8 big-endian bytes; under `VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES`
+  // those are the trailing 8 bytes of the digest.
   repeated bytes block_hashes = 1;
-  // Hash of the block before `block_hashes[0]`; unset for the first block of a
-  // sequence.
+  // Hash of the block before the range `token_ids` covers. Unset for the first
+  // block of a sequence, and when the publisher does not report it.
   optional bytes parent_block_hash = 2;
-  // Tokens of all blocks, `block_size` per block.
+  // Tokens of the stored range, `block_size` per block. The range can include
+  // blocks missing from `block_hashes`, and events from offloading tiers may
+  // carry no tokens at all.
   repeated uint32 token_ids = 3;
+  // Tokens per block; 0 when the publisher does not report it.
   uint32 block_size = 4;
   // Storage tier holding the blocks: "GPU", "CPU", "STORAGE", or a
   // connector-defined name.
   optional string medium = 5;
   optional string lora_name = 6;
-  // Inputs to each block's hash other than its tokens, one entry per block.
-  // Empty when no block has any.
+  // Inputs to each block's hash other than its tokens, one entry per block in
+  // `block_hashes`; the entry of a block without any has no keys. Empty when
+  // the publisher does not report them.
   repeated KvBlockExtraKeys extra_keys = 7;
   // KV cache group of the blocks, with the cache spec of that group.
   optional uint32 group_idx = 8;
@@ -148,5 +165,7 @@ message KvBlocksRemoved {
   optional string ownership = 5;
 }
 
-// Every block of every tier was dropped.
+// A block pool of the engine dropped all its blocks. The event does not name
+// the pool or its tier, and blocks held elsewhere, such as by an offloading
+// connector, may remain.
 message KvAllBlocksCleared {}

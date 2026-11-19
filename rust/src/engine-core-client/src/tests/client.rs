@@ -4408,6 +4408,7 @@ fn python_msgpack_fixtures_match_rust_encoding_and_record_nixl_metrics() {
                         block_hashes: [
                             ExternalBlockHash(0102030405060708),
                             ExternalBlockHash(ffffffffffffffff),
+                            ExternalBlockHash(fffffffffffffffe),
                         ],
                         parent_block_hash: None,
                         token_ids: [

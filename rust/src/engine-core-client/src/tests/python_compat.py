@@ -783,9 +783,10 @@ kv_event_batch = KVEventBatch(
             session_id="session-1",
             lookahead_token_ids=[[21], [31]],
         ),
-        # `VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES` publishes the low 64 bits.
+        # `VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES` publishes the low 64 bits; the
+        # LMCache connector forwards Python's signed `hash()`.
         BlockStored(
-            block_hashes=[0x0102030405060708, 2**64 - 1],
+            block_hashes=[0x0102030405060708, 2**64 - 1, -2],
             parent_block_hash=None,
             token_ids=[1, 2],
             block_size=1,

@@ -4033,6 +4033,14 @@ async fn kv_events_stream_retained_then_live_batches_and_resume() {
         .err()
         .unwrap();
     assert_eq!(status.code(), Code::OutOfRange);
+
+    // Nor can a stream resume past what the engine has published.
+    let ahead = pb::KvEventCursor {
+        stream_id: stream_id.clone(),
+        next_sequence_number: 4,
+    };
+    let status = subscribe_kv_events(&service, Some(ahead)).await.err().unwrap();
+    assert_eq!(status.code(), Code::OutOfRange);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
