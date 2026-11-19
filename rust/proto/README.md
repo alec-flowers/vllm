@@ -5,6 +5,23 @@ This directory is the canonical source for vLLM's gRPC schema.
 See [context parallel deployment](../../docs/serving/context_parallel_deployment.md)
 for effective attention block-size metadata in Python and `Control.GetServerInfo`.
 
+## KV cache events
+
+`KvEvents.SubscribeKvEvents` streams the KV cache events of an engine started
+with `--kv-events-config '{"enable_kv_cache_events": true}'`, one stream per
+data-parallel rank. The frontend reads them from the engine's ZMQ publisher,
+which stays available to existing ZMQ consumers, and starts doing so when a rank
+gets its first subscriber. It then keeps as many batches as the publisher's
+`buffer_steps` so that later subscribers can catch up and reconnecting ones can
+resume.
+
+Set `replay_endpoint` in the config so the frontend can fetch the batches
+published before the first subscriber and any that the publisher's PUB socket
+drops. Without it, those batches are lost and every open stream ends with
+`DATA_LOSS`. The frontend reaches a wildcard endpoint such as `tcp://*:5557`
+over loopback; an engine on another host must publish on an address the
+frontend can connect to, for example `tcp://*:0`.
+
 Schema updates are no longer published to the Buf Schema Registry. Rust consumers
 should use `vllm-proto` from crates.io; consumers in other languages can generate
 bindings from the `.proto` files in this directory. Buf still builds and lints
@@ -16,11 +33,12 @@ the schemas on pull requests, including on forks.
 
 ```toml
 [dependencies]
-vllm-proto = "0.7"
+vllm-proto = "0.8"
 ```
 
 For example, import `vllm_proto::inference_client::InferenceClient`,
-`vllm_proto::control_client::ControlClient`, or
+`vllm_proto::control_client::ControlClient`,
+`vllm_proto::kv_events_client::KvEventsClient`, or
 `vllm_proto::render_client::RenderClient`. The vLLM frontend uses this same crate.
 The package includes the canonical `.proto` files and generates bindings during
 compilation using `protox` and `tonic-prost-build`. Consumers do not need Buf
